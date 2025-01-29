@@ -20,6 +20,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Joy
 
 import math
+import time
 
 from synapse_msgs.msg import EdgeVectors
 from synapse_msgs.msg import TrafficStatus
@@ -40,7 +41,7 @@ SPEED_25_PERCENT = SPEED_MAX / 4
 SPEED_50_PERCENT = SPEED_25_PERCENT * 2
 SPEED_75_PERCENT = SPEED_25_PERCENT * 3
 
-THRESHOLD_OBSTACLE_VERTICAL = 1.0
+THRESHOLD_OBSTACLE_VERTICAL = 1
 THRESHOLD_OBSTACLE_HORIZONTAL = 0.25
 
 
@@ -85,6 +86,7 @@ class LineFollower(Node):
 		self.obstacle_detected = False
 
 		self.ramp_detected = False
+		self.previous_turn = 0
 
 	""" Operates the rover in manual mode by publishing on /cerebri/in/joy.
 
@@ -131,7 +133,7 @@ class LineFollower(Node):
 		if (vectors.vector_count == 1):  # curve.
 			# Calculate the magnitude of the x-component of the vector.
 			deviation = vectors.vector_1[1].x - vectors.vector_1[0].x
-			turn = deviation / vectors.image_width
+			turn = 1.2* deviation / vectors.image_width
 
 		if (vectors.vector_count == 2):  # straight.
 			# Calculate the middle point of the x-components of the vectors.
@@ -141,19 +143,39 @@ class LineFollower(Node):
 			deviation = half_width - middle_x
 			turn = deviation / half_width
 
+			# smoothing_factor = 0.7
+			# turn=smoothing_factor*turn + (1-smoothing_factor) *self.previous_turn
+			# self.previous_turn = turn
+
+			# turn_magnitude = abs(turn)
+			# if turn_magnitude > 0.6:
+			# 	speed = SPEED_25_PERCENT
+			# elif turn_magnitude > 0.4:
+			# 	speed = SPEED_50_PERCENT
+			# else :
+			# 	speed = SPEED_75_PERCENT
+
 		if (self.traffic_status.stop_sign is True):
 			speed = SPEED_MIN
 			print("stop sign detected")
 
 		if self.ramp_detected is True:
 			# TODO: participants need to decide action on detection of ramp/bridge.
+			speed=SPEED_25_PERCENT
 			print("ramp/bridge detected")
+			self.rover_move_manual_mode(speed, turn)
+			time.sleep(1)
+		else: SPEED_75_PERCENT
 
 		if self.obstacle_detected is True:
 			# TODO: participants need to decide action on detection of obstacle.
+			speed=SPEED_25_PERCENT
 			print("obstacle detected")
+			self.rover_move_manual_mode(speed, turn)
+		else: SPEED_75_PERCENT
 
 		self.rover_move_manual_mode(speed, turn)
+		
 
 	""" Updates instance member with traffic status message received from /traffic_status.
 
@@ -191,27 +213,62 @@ class LineFollower(Node):
 		side_ranges_right = ranges[0: int(length * theta / PI)]
 		side_ranges_left = ranges[int(length * (PI - theta) / PI):]
 
-		# process front ranges.
+		# Ramp detection
+		proportion_above_threshold = sum(distance < THRESHOLD_OBSTACLE_VERTICAL for distance in front_ranges) / len(front_ranges)
+		ramp_threshold = 0.9
+		if proportion_above_threshold >=ramp_threshold:
+			self.ramp_detected=True
+			self.obstacle_detected=False
+			return
+		else:
+			self.ramp_detected=False
+
+
+
+			
+		# # Process front ranges for obstacle detection
 		angle = theta - PI / 2
 		for i in range(len(front_ranges)):
-			if (front_ranges[i] < THRESHOLD_OBSTACLE_VERTICAL):
-				self.obstacle_detected = True
+			self.obstacle_detected = any(distance < THRESHOLD_OBSTACLE_VERTICAL for distance in front_ranges)
+			if(self.obstacle_detected):
 				return
-
+			else:
+				self.obstacle_detected = False
 			angle += message.angle_increment
-
-		# process side ranges.
+			
+    
+    	# # Process side ranges for obstacle detection
 		side_ranges_left.reverse()
-		for side_ranges in [side_ranges_left, side_ranges_right]:
+		for side_ranges in [side_ranges_left,side_ranges_right]:
 			angle = 0.0
-			for i in range(len(side_ranges)):
-				if (side_ranges[i] < THRESHOLD_OBSTACLE_HORIZONTAL):
-					self.obstacle_detected = True
-					return
+			self.obstacle_detected = self.obstacle_detected or any(distance < THRESHOLD_OBSTACLE_HORIZONTAL for distance in side_ranges_left)
+			if(self.obstacle_detected):
+				return
+			else : self.obstacle_detected = False
+			angle += message.angle_increment
+		
+		# # process front ranges.
+		# angle = theta - PI / 2
+		# for i in range(len(front_ranges)):
+		# 	if (front_ranges[i] < THRESHOLD_OBSTACLE_VERTICAL):
+		# 		self.obstacle_detected = True
+		# 		return
+		# 	angle += message.angle_increment
 
-				angle += message.angle_increment
 
-		self.obstacle_detected = False
+		# # process side ranges.
+		# side_ranges_left.reverse()
+		# for side_ranges in [side_ranges_left, side_ranges_right]:
+		# 	angle = 0.0
+		# 	for i in range(len(side_ranges)):
+		# 		if (side_ranges[i] < THRESHOLD_OBSTACLE_HORIZONTAL):
+		# 			self.obstacle_detected = True
+		# 			return
+		# 		angle += message.angle_increment
+
+
+		# self.obstacle_detected = False
+		# self.ramp_detected = False
 
 
 def main(args=None):
